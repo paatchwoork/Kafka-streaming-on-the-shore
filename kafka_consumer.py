@@ -1,31 +1,35 @@
+import logging
 from confluent_kafka import Consumer, KafkaError
 import json
-import psycopg2
+from kafka_on_the_cloud import CloudManager
+from worker import worker
 
-# Kafka consumer configuration
+# Configuring the logger
+
+logging.basicConfig(
+    format="%(asctime)s :: %(levelname)s :: %(funcName)s :: %(lineno)d :: %(message)s",
+    level=logging.INFO,
+    filename="consumer.log",
+)
+
 conf = {
-    'bootstrap.servers': 'localhost:9092',  # Kafka broker(s) address
-    'group.id': 'my_consumer_group',        # Consumer group ID
-    'auto.offset.reset': 'earliest'         # Start consuming from the earliest available offset
+    "bootstrap.servers": "localhost:9092",
+    "group.id": "my_consumer_group",
+    "auto.offset.reset": "earliest",
 }
 
-# Create Kafka consumer
 consumer = Consumer(conf)
 
-# Subscribe to Kafka topic
-consumer.subscribe(['delhaize_shop'])
+consumer.subscribe(["delhaize_shop"])
 
-# Database connection parameters
-db_params = {
-    'host': 'database-2.chwckuee0smq.eu-central-1.rds.amazonaws.com',
-    'port': '5432',
-    'database': 'database-2',
-    'user': 'postgres',
-    'password': 'postgres'
-}
-# Connect to PostgreSQL database
-conn = psycopg2.connect(**db_params)
-cur = conn.cursor()
+cloud_manager = CloudManager(
+    endpoint="database-2.chwckuee0smq.eu-central-1.rds.amazonaws.com",
+    port="5432",
+    user="postgres",
+    password="postgres",
+    dbname="postgres",
+    ssl_certificate="./eu-central-1-bundle.pem",
+)
 
 # Consume messages from Kafka topic
 try:
@@ -39,29 +43,25 @@ try:
                 # End of partition
                 continue
             else:
-                print(msg.error())
+                logging.error(f"Kafka error: {msg.error()}")
                 break
 
         # Process message
         try:
-            # Parse message value (assuming it's JSON)
             data = json.loads(msg.value())
 
-            # Insert data into PostgreSQL database
-            cur.execute("""
-                INSERT INTO your_table (column1, column2, ...)
-                VALUES (%s, %s, ...)
-            """, (data['column1'], data['column2'], ...))
+            processed_data = worker(data)
 
-            # Commit transaction
-            conn.commit()
+            # Insert data into the database
+            success = cloud_manager.insert_data(processed_data)
+            if success:
+                logging.info("Data inserted successfully")
+            else:
+                logging.error("Failed to insert data")
+
         except Exception as e:
-            # Handle error
-            print(f"Error processing message: {str(e)}")
-            conn.rollback()
+            logging.error(f"Error processing message: {str(e)}")
 
 finally:
-    # Close Kafka consumer and database connection
     consumer.close()
-    cur.close()
-    conn.close()
+  
